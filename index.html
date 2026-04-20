@@ -29,7 +29,7 @@ input{font-family:monospace;}
   window._fbReady=true;window.dispatchEvent(new Event("fbReady"));
 </script>
 <script type="text/babel">
-const {useState,useEffect,useCallback,useRef,useMemo}=React;
+const {useState,useEffect,useCallback,useRef}=React;
 
 /* ── 상수 ── */
 const GC=11,GR=9;
@@ -348,12 +348,12 @@ function Game({roomCode,myPlayer}){
     setMode(null);
   };
 
-  // 하이라이트 — BFS로 이동 가능 범위 및 소모 행동력 계산
-  const movH=useMemo(()=>{
-    const m=new Map();
-    if(!selShip||mode!=="mov")return m;
-    const ml=selShip.ml;
-    const blocked=new Set(gs.ships.filter(s=>s.id!==selShip.id).map(s=>`${s.r},${s.c}`));
+  // 하이라이트 계산 (단순 인라인)
+  const movH=new Map();
+  const atkH=new Set();
+  if(selShip&&mode==="mov"&&gs.ships){
+    const ml=selShip.ml||0;
+    const blocked=new Set((gs.ships||[]).filter(s=>s.id!==selShip.id).map(s=>`${s.r},${s.c}`));
     const q=[[selShip.r,selShip.c,0]];
     const vis=new Set([`${selShip.r},${selShip.c}`]);
     while(q.length){
@@ -363,20 +363,15 @@ function Game({roomCode,myPlayer}){
         const k=`${nr},${nc}`;
         const nc2=cost+1;
         if(nc2>ml||vis.has(k)||blocked.has(k))continue;
-        vis.add(k);m.set(k,nc2);
+        vis.add(k);movH.set(k,nc2);
         q.push([nr,nc,nc2]);
       }
     }
-    return m;
-  },[selShip?.id,selShip?.r,selShip?.c,selShip?.ml,mode,gs.ships]);
-
-  const atkH=useMemo(()=>{
-    const s=new Set();
-    if(!selShip||mode!=="atk")return s;
-    const rng=selT.range;
-    for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(selShip,{r,c})>0&&md(selShip,{r,c})<=rng)s.add(`${r},${c}`);
-    return s;
-  },[selShip?.id,selShip?.r,selShip?.c,mode,selT]);
+  }
+  if(selShip&&mode==="atk"&&selT){
+    const rng=selT.range||0;
+    for(let r=0;r<GR;r++)for(let c=0;c<GC;c++){const d=md(selShip,{r,c});if(d>0&&d<=rng)atkH.add(`${r},${c}`);}
+  }
 
 
 
