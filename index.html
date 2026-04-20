@@ -348,16 +348,54 @@ function Game({roomCode,myPlayer}){
     setMode(null);
   };
 
-  // 하이라이트
-  const movH=new Set(),atkH=new Set();
+  // 하이라이트 — 이동: BFS로 행동력 소모량 계산
+  const movH=new Map(); // key->`${r},${c}`, value->소모 행동력
+  const atkH=new Set();
   if(selShip&&mode==="mov"){
-    [[selShip.r-1,selShip.c],[selShip.r+1,selShip.c],[selShip.r,selShip.c-1],[selShip.r,selShip.c+1]]
-      .forEach(([r,c])=>{if(r>=0&&r<GR&&c>=0&&c<GC&&!gs.ships.find(s=>s.r===r&&s.c===c))movH.add(`${r},${c}`);});
+    const ml=selShip.ml;
+    const blocked=new Set(gs.ships.filter(s=>s.id!==selShip.id).map(s=>`${s.r},${s.c}`));
+    const q=[[selShip.r,selShip.c,0]];
+    const vis=new Map([[`${selShip.r},${selShip.c}`,0]]);
+    while(q.length){
+      const[r,c,cost]=q.shift();
+      for(const[nr,nc]of[[r-1,c],[r+1,c],[r,c-1],[r,c+1]]){
+        if(nr<0||nr>=GR||nc<0||nc>=GC)continue;
+        const k=`${nr},${nc}`;
+        const nc2=cost+1;
+        if(nc2>ml)continue;
+        if(vis.has(k))continue;
+        if(blocked.has(k))continue;
+        vis.set(k,nc2);
+        movH.set(k,nc2);
+        q.push([nr,nc,nc2]);
+      }
+    }
   }
   if(selShip&&mode==="atk"){
     const rng=selT.range;
     for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(selShip,{r,c})>0&&md(selShip,{r,c})<=rng)atkH.add(`${r},${c}`);
   }
+
+  // WASD / 방향키 이동
+  useEffect(()=>{
+    if(!isMe||mode!=="mov"||!selShip)return;
+    const handle=(e)=>{
+      let dr=0,dc=0;
+      if(e.key==="ArrowUp"||e.key==="w"||e.key==="W"){dr=-1;}
+      else if(e.key==="ArrowDown"||e.key==="s"||e.key==="S"){dr=1;}
+      else if(e.key==="ArrowLeft"||e.key==="a"||e.key==="A"){dc=-1;}
+      else if(e.key==="ArrowRight"||e.key==="d"||e.key==="D"){dc=1;}
+      else return;
+      e.preventDefault();
+      const nr=selShip.r+dr, nc=selShip.c+dc;
+      if(nr<0||nr>=GR||nc<0||nc>=GC)return;
+      const k=`${nr},${nc}`;
+      if(!movH.has(k))return;
+      mutate(s=>doMove(s,selShip.id,nr,nc));
+    };
+    window.addEventListener("keydown",handle);
+    return()=>window.removeEventListener("keydown",handle);
+  },[isMe,mode,selShip,movH,mutate]);
 
   const canCol=selShip&&selT?.col&&cell(gs,selShip.r,selShip.c)==="planet"&&gs.col[`${selShip.r},${selShip.c}`]!==myPlayer;
   const p0s=gs.ships.filter(s=>s.owner===0),p1s=gs.ships.filter(s=>s.owner===1);
@@ -420,7 +458,7 @@ function Game({roomCode,myPlayer}){
             const rev=gs.revealed[idx];
             const ct=gs.map[idx]||"empty";
             const owner=col[key];
-            const mov=movH.has(key),atk=atkH.has(key);
+            const movCost=movH.get(key),mov=movCost!==undefined,atk=atkH.has(key);
             const isSel=selShip?.r===r&&selShip?.c===c;
             const strRev=vis.includes(idx);
             let bg="#0d0d1a";
@@ -452,7 +490,7 @@ function Game({roomCode,myPlayer}){
                   <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.2}>💎</text>}
                 {!isH0&&!isH1&&rev&&ct==="stream"&&strRev&&
                   <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.2}>🌀</text>}
-                {!isH0&&!isH1&&!rev&&
+                {mov&&!ship&&<text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.4} fill="#4488ff" fontWeight="bold" opacity="0.9">{movCost}</text>}
                   <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.3} textAnchor="middle" fontSize={fs*0.85} fill="#252535">?</text>}
                 {ship&&<>
                   <rect x={c*CELL+CELL*0.18} y={r*CELL+CELL*0.18} width={CELL*0.64} height={CELL*0.64}
@@ -491,7 +529,25 @@ function Game({roomCode,myPlayer}){
                   </button>
                 )}
               </div>
-              {mode==="mov"&&<div style={{fontSize:10,color:"#4488ff",marginTop:4}}>인접 칸 탭 (남은 {selShip.ml}칸)</div>}
+              {mode==="mov"&&<>
+                <div style={{fontSize:10,color:"#4488ff",marginTop:4}}>이동 칸 탭 또는 아래 버튼 사용 (남은 {selShip.ml}칸)</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginTop:6,width:120,margin:"6px auto 0"}}>
+                  <div/>
+                  <button onClick={()=>{const nr=selShip.r-1,nc=selShip.c;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
+                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>▲</button>
+                  <div/>
+                  <button onClick={()=>{const nr=selShip.r,nc=selShip.c-1;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
+                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>◀</button>
+                  <button onClick={()=>{setSel(null);setMode(null);}}
+                    style={{padding:"8px 0",background:"#0a0a1a",color:"#444",border:"1px solid #111",borderRadius:6,fontSize:11}}>✕</button>
+                  <button onClick={()=>{const nr=selShip.r,nc=selShip.c+1;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
+                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>▶</button>
+                  <div/>
+                  <button onClick={()=>{const nr=selShip.r+1,nc=selShip.c;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
+                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>▼</button>
+                  <div/>
+                </div>
+              </>}
               {mode==="atk"&&<div style={{fontSize:10,color:"#ff4444",marginTop:4}}>공격할 적 탭</div>}
             </>
           ):(
