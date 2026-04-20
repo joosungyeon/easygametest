@@ -29,7 +29,7 @@ input{font-family:monospace;}
   window._fbReady=true;window.dispatchEvent(new Event("fbReady"));
 </script>
 <script type="text/babel">
-const {useState,useEffect,useCallback,useRef}=React;
+const {useState,useEffect,useCallback,useRef,useMemo}=React;
 
 /* ── 상수 ── */
 const GC=11,GR=9;
@@ -348,40 +348,46 @@ function Game({roomCode,myPlayer}){
     setMode(null);
   };
 
-  // 하이라이트 — 이동: BFS로 행동력 소모량 계산
-  const movH=new Map(); // key->`${r},${c}`, value->소모 행동력
-  const atkH=new Set();
-  if(selShip&&mode==="mov"){
+  // 하이라이트 — BFS로 이동 가능 범위 및 소모 행동력 계산
+  const movH=useMemo(()=>{
+    const m=new Map();
+    if(!selShip||mode!=="mov")return m;
     const ml=selShip.ml;
     const blocked=new Set(gs.ships.filter(s=>s.id!==selShip.id).map(s=>`${s.r},${s.c}`));
     const q=[[selShip.r,selShip.c,0]];
-    const vis=new Map([[`${selShip.r},${selShip.c}`,0]]);
+    const vis=new Set([`${selShip.r},${selShip.c}`]);
     while(q.length){
       const[r,c,cost]=q.shift();
       for(const[nr,nc]of[[r-1,c],[r+1,c],[r,c-1],[r,c+1]]){
         if(nr<0||nr>=GR||nc<0||nc>=GC)continue;
         const k=`${nr},${nc}`;
         const nc2=cost+1;
-        if(nc2>ml)continue;
-        if(vis.has(k))continue;
-        if(blocked.has(k))continue;
-        vis.set(k,nc2);
-        movH.set(k,nc2);
+        if(nc2>ml||vis.has(k)||blocked.has(k))continue;
+        vis.add(k);m.set(k,nc2);
         q.push([nr,nc,nc2]);
       }
     }
-  }
-  if(selShip&&mode==="atk"){
-    const rng=selT.range;
-    for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(selShip,{r,c})>0&&md(selShip,{r,c})<=rng)atkH.add(`${r},${c}`);
-  }
+    return m;
+  },[selShip?.id,selShip?.r,selShip?.c,selShip?.ml,mode,gs.ships]);
 
-  // WASD / 방향키 이동 — movH를 ref로 유지해서 무한루프 방지
+  const atkH=useMemo(()=>{
+    const s=new Set();
+    if(!selShip||mode!=="atk")return s;
+    const rng=selT.range;
+    for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(selShip,{r,c})>0&&md(selShip,{r,c})<=rng)s.add(`${r},${c}`);
+    return s;
+  },[selShip?.id,selShip?.r,selShip?.c,mode,selT]);
+
+  // WASD / 방향키
+  const selShipRef=useRef(selShip);
+  selShipRef.current=selShip;
   const movHRef=useRef(movH);
   movHRef.current=movH;
   useEffect(()=>{
-    if(!isMe||mode!=="mov"||!selShip)return;
+    if(!isMe||mode!=="mov")return;
     const handle=(e)=>{
+      const ship=selShipRef.current;
+      if(!ship)return;
       let dr=0,dc=0;
       if(e.key==="ArrowUp"||e.key==="w"||e.key==="W")dr=-1;
       else if(e.key==="ArrowDown"||e.key==="s"||e.key==="S")dr=1;
@@ -389,14 +395,14 @@ function Game({roomCode,myPlayer}){
       else if(e.key==="ArrowRight"||e.key==="d"||e.key==="D")dc=1;
       else return;
       e.preventDefault();
-      const nr=selShip.r+dr,nc=selShip.c+dc;
+      const nr=ship.r+dr,nc=ship.c+dc;
       if(nr<0||nr>=GR||nc<0||nc>=GC)return;
       if(!movHRef.current.has(`${nr},${nc}`))return;
-      mutate(s=>doMove(s,selShip.id,nr,nc));
+      mutate(s=>doMove(s,ship.id,nr,nc));
     };
     window.addEventListener("keydown",handle);
     return()=>window.removeEventListener("keydown",handle);
-  },[isMe,mode,selShip?.id,mutate]);
+  },[isMe,mode,mutate]);
 
   const canCol=selShip&&selT?.col&&cell(gs,selShip.r,selShip.c)==="planet"&&gs.col[`${selShip.r},${selShip.c}`]!==myPlayer;
   const p0s=gs.ships.filter(s=>s.owner===0),p1s=gs.ships.filter(s=>s.owner===1);
