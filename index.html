@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>우주 전략 게임</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+body{background:#050510;color:#ccc;font-family:monospace;min-height:100vh;}
+button{cursor:pointer;font-family:monospace;}
+button:disabled{cursor:default;}
+input{font-family:monospace;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:32px;height:32px;border:3px solid #2244aa;border-top:3px solid #44aaff;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, set, onValue, off } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+  const cfg={apiKey:"AIzaSyCG7aQA8BOC45YdkYEnhj_KFNVbecZtwmE",authDomain:"easygamem.firebaseapp.com",databaseURL:"https://easygamem-default-rtdb.firebaseio.com",projectId:"easygamem",storageBucket:"easygamem.firebasestorage.app",messagingSenderId:"764058249795",appId:"1:764058249795:web:53710f5c510d42082402f6"};
+  const app=initializeApp(cfg);
+  const db=getDatabase(app);
+  window._db=db;window._ref=ref;window._set=set;window._onValue=onValue;window._off=off;
+  window._fbReady=true;window.dispatchEvent(new Event("fbReady"));
+</script>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useRef}=React;
+
+/* ── 상수 ── */
+const GC=11,GR=9;
+const ST={
+  scout:    {name:"탐사선",      cost:200, hp:300,  atk:100, range:2,sight:2,move:3,col:true, sym:"S"},
+  fighter:  {name:"전투선",      cost:500, hp:1000, atk:200, range:2,sight:1,move:2,col:false,sym:"F"},
+  satellite:{name:"장거리전투선", cost:1000,hp:1000, atk:300, range:3,sight:1,move:2,col:false,sym:"L"},
+  flagship: {name:"함대선",      cost:2500,hp:10000,atk:1000,range:4,sight:1,move:2,col:false,sym:"A"},
+};
+const REGEN=10;
+const md=(a,b)=>Math.abs(a.r-b.r)+Math.abs(a.c-b.c);
+const rnd4=()=>Math.floor(1000+Math.random()*9000).toString();
+const shuf=a=>{const b=[...a];for(let i=b.length-1;i>0;i--){const j=0|Math.random()*(i+1);[b[i],b[j]]=[b[j],b[i]];}return b;};
+
+/* ── 맵: 1차원 배열로 저장 (Firebase 호환) ── */
+// map[r*GC+c] = "empty"|"planet"|"resource"|"stream"
+function generateMap(){
+  const map=Array(GR*GC).fill("empty");
+  const hq=[{r:4,c:0},{r:4,c:10}];
+  const ok=(r,c)=>!hq.some(h=>h.r===r&&h.c===c)&&!hq.some(h=>md(h,{r,c})<5);
+  const cands=shuf(Array.from({length:GR*GC},(_,i)=>({r:0|i/GC,c:i%GC})).filter(({r,c})=>ok(r,c)));
+  const planets=[];
+  for(const p of cands){
+    if(planets.length>=8)break;
+    if(planets.every(q=>md(p,q)>=3)){planets.push(p);map[p.r*GC+p.c]="planet";}
+  }
+  if(planets.length<5){
+    for(const p of cands){
+      if(planets.length>=5)break;
+      if(!planets.some(q=>q.r===p.r&&q.c===p.c)){planets.push(p);map[p.r*GC+p.c]="planet";}
+    }
+  }
+  let i=0;
+  const rem=cands.filter(p=>map[p.r*GC+p.c]==="empty");
+  for(let p=0;p<5&&i<rem.length;p++){const{r,c}=rem[i++];map[r*GC+c]="resource";}
+  for(let p=0;p<4&&i<rem.length;p++){const{r,c}=rem[i++];map[r*GC+c]="stream";}
+  const dirs=["up","down","left","right"];
+  const sd={};
+  for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)sd[r*GC+c]={dir:dirs[0|Math.random()*4],dist:1+(0|Math.random()*3)};
+  return{map,sd};
+}
+const cell=(gs,r,c)=>gs.map[r*GC+c]||"empty";
+const sdir=(gs,r,c)=>gs.sd[r*GC+c]||{dir:"right",dist:1};
+
+/* ── 시야 ── */
+function revealFor(gs,player){
+  const rev=[...gs.revealed];
+  // HQ 항상 공개
+  rev[4*GC+0]=true;rev[4*GC+10]=true;
+  gs.ships.filter(s=>s.owner===player).forEach(s=>{
+    const t=ST[s.type];
+    for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(s,{r,c})<=t.sight)rev[r*GC+c]=true;
+  });
+  const hq=gs.hq[player];
+  for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(hq,{r,c})<=2)rev[r*GC+c]=true;
+  return rev;
+}
+
+/* ── BFS 1칸 이동 ── */
+function stepTo(ship,tr,tc,ships){
+  const blocked=new Set(ships.filter(s=>s.id!==ship.id).map(s=>s.r*GC+s.c));
+  const q=[[ship.r,ship.c,[]]];const vis=new Set([ship.r*GC+ship.c]);
+  while(q.length){
+    const[r,c,path]=q.shift();
+    for(const[nr,nc]of[[r-1,c],[r+1,c],[r,c-1],[r,c+1]]){
+      if(nr<0||nr>=GR||nc<0||nc>=GC)continue;
+      const k=nr*GC+nc;if(vis.has(k)||blocked.has(k))continue;
+      const np=[...path,[nr,nc]];
+      if(nr===tr&&nc===tc)return np[0]||null;
+      vis.add(k);q.push([nr,nc,np]);
+    }
+  }
+  return null;
+}
+
+/* ── 초기 상태 ── */
+function makeInit(){
+  const{map,sd}=generateMap();
+  const revealed=Array(GR*GC).fill(false);
+  revealed[4*GC+0]=true;revealed[4*GC+10]=true;
+  const gs={
+    map,sd,
+    revealed,
+    vis:[],          // 방문한 스트림 인덱스 배열
+    col:{},          // "r,c" -> owner(0|1) or null
+    rsp:{},          // "r,c" -> true (자원 획득됨)
+    res:[500,600],
+    hq:[{r:4,c:0,hp:10000,maxHp:10000},{r:4,c:10,hp:10000,maxHp:10000}],
+    ships:[
+      {id:1,owner:0,type:"scout",r:4,c:0,hp:300,maxHp:300,ml:3,atk:false},
+      {id:2,owner:1,type:"scout",r:4,c:10,hp:300,maxHp:300,ml:3,atk:false},
+    ],
+    nid:3,turn:0,log:["게임 시작! P1(500자원) vs P2(600자원 후공보너스)"],win:null,
+  };
+  gs.revealed=revealFor(gs,0);
+  return gs;
+}
+
+/* ── 게임 액션 ── */
+function doMove(gs,shipId,r,c){
+  const cp=gs.turn%2;
+  let ships=[...gs.ships];
+  const ship=ships.find(s=>s.id===shipId);
+  if(!ship||ship.ml<=0||md(ship,{r,c})!==1)return gs;
+  if(ships.find(s=>s.r===r&&s.c===c))return gs;
+  let res=[...gs.res],col={...gs.col},rsp={...gs.rsp};
+  let log=[...gs.log],win=gs.win,nr=r,nc=c;
+  const vis=[...gs.vis];
+  const ct=cell(gs,r,c);
+  if(ct==="stream"){
+    const idx=r*GC+c;
+    if(!vis.includes(idx))vis.push(idx);
+    const sd=sdir(gs,r,c);
+    const dr=sd.dir==="up"?-1:sd.dir==="down"?1:0;
+    const dc=sd.dir==="left"?-1:sd.dir==="right"?1:0;
+    nr=Math.max(0,Math.min(GR-1,r+dr*sd.dist));
+    nc=Math.max(0,Math.min(GC-1,c+dc*sd.dist));
+    log.push(`🌀 스트림→${sd.dir} ${sd.dist}칸`);
+  }
+  const lk=`${nr},${nc}`,lc=cell(gs,nr,nc);
+  if(lc==="resource"&&!rsp[lk]){res[cp]+=300;rsp[lk]=true;log.push(`💎 자원+300`);}
+  ships=ships.map(s=>s.id===shipId?{...s,r:nr,c:nc,ml:s.ml-1}:s);
+  const revealed=revealFor({...gs,ships},cp);
+  return{...gs,ships,res,col,rsp,log,revealed,win,vis};
+}
+
+function doColonize(gs,shipId){
+  const cp=gs.turn%2;
+  let ships=[...gs.ships];
+  const ship=ships.find(s=>s.id===shipId);
+  if(!ship||!ST[ship.type].col)return gs;
+  if(cell(gs,ship.r,ship.c)!=="planet")return gs;
+  const key=`${ship.r},${ship.c}`;
+  let col={...gs.col},log=[...gs.log];
+  const own=gs.col[key];
+  if(own===cp)return gs;
+  if(own===undefined||own===null){col[key]=cp;log.push(`🪐 행성 점령! P${cp+1} (탐사선 소멸)`);}
+  else{col[key]=null;log.push(`🪐 적 행성 중립화! (탐사선 소멸)`);}
+  ships=ships.filter(s=>s.id!==shipId);
+  const revealed=revealFor({...gs,ships,col},cp);
+  return{...gs,ships,col,log,revealed};
+}
+
+function doAttack(gs,shipId,tr,tc){
+  const cp=gs.turn%2;
+  let ships=[...gs.ships];
+  const ship=ships.find(s=>s.id===shipId);
+  if(!ship||ship.atk)return gs;
+  const t=ST[ship.type];
+  const d=md(ship,{r:tr,c:tc});
+  if(d===0||d>t.range)return gs;
+  const eHq=gs.hq[1-cp];
+  const isEHq=eHq.r===tr&&eHq.c===tc;
+  const eShip=ships.find(s=>s.owner!==cp&&s.r===tr&&s.c===tc);
+  if(!isEHq&&!eShip)return gs;
+  let hq=[...gs.hq],log=[...gs.log],win=gs.win;
+  if(isEHq){
+    const nhp=Math.max(0,hq[1-cp].hp-t.atk);
+    hq[1-cp]={...hq[1-cp],hp:nhp};
+    log.push(`P${cp+1} ${t.name}→본진 -${t.atk}(HP:${nhp})`);
+    if(nhp<=0)win=cp;
+  }else{
+    ships=ships.map(s=>s.id!==eShip.id?s:{...s,hp:s.hp-t.atk}).filter(s=>s.hp>0);
+    log.push(`P${cp+1} ${t.name}→적${ST[eShip.type].name} -${t.atk}`);
+  }
+  ships=ships.map(s=>s.id===shipId?{...s,atk:true}:s);
+  return{...gs,ships,hq,log,win};
+}
+
+function doBuild(gs,type,cp){
+  const t=ST[type];if(!t)return gs;
+  if(gs.res[cp]<t.cost)return gs;
+  const hq=gs.hq[cp];
+  if(gs.ships.find(s=>s.r===hq.r&&s.c===hq.c))return{...gs,log:[...gs.log,"본진 막힘"]};
+  const ship={id:gs.nid,owner:cp,type,r:hq.r,c:hq.c,hp:t.hp,maxHp:t.hp,ml:0,atk:false};
+  const res=[...gs.res];res[cp]-=t.cost;
+  return{...gs,ships:[...gs.ships,ship],res,nid:gs.nid+1,log:[...gs.log,`P${cp+1} ${t.name} 생산(-${t.cost})`]};
+}
+
+function doEndTurn(gs){
+  const np=(gs.turn+1)%2;
+  const res=[...gs.res];res[np]+=100;
+  Object.entries(gs.col||{}).forEach(([,o])=>{if(o===np)res[np]+=100;});
+  const ships=gs.ships.map(s=>({...s,ml:ST[s.type].move,atk:false,hp:Math.min(s.maxHp,s.hp+REGEN)}));
+  const revealed=revealFor({...gs,ships},np);
+  return{...gs,turn:gs.turn+1,res,ships,log:[...gs.log,`── P${np+1} 턴 (💰${res[np]})`],revealed};
+}
+
+/* ── 로비 ── */
+function Lobby({onJoin}){
+  const[inp,setInp]=useState("");
+  const[msg,setMsg]=useState("");
+  const[busy,setBusy]=useState(false);
+
+  const create=async()=>{
+    setBusy(true);setMsg("방 생성 중...");
+    try{
+      if(!window._db)throw new Error("Firebase DB 없음");
+      const code=rnd4();
+      setMsg("코드 생성: "+code+" / 저장 중...");
+      const gs=makeInit();
+      // map이 배열인지 확인
+      if(!Array.isArray(gs.map))throw new Error("map 생성 실패");
+      const r=window._ref(window._db,`rooms/${code}`);
+      await window._set(r,gs);
+      setMsg("저장 완료!");
+      onJoin(code,0);
+    }catch(e){
+      console.error(e);
+      setMsg("❌ 오류: "+e.message);
+      setBusy(false);
+    }
+  };
+
+  const join=async()=>{
+    const code=inp.trim();
+    if(code.length!==4){setMsg("4자리 코드를 입력하세요");return;}
+    setBusy(true);setMsg("");
+    try{
+      const snap=await new Promise(res=>window._onValue(window._ref(window._db,`rooms/${code}`),res,{onlyOnce:true}));
+      if(!snap.val()){setMsg("방 없음");setBusy(false);return;}
+      onJoin(code,1);
+    }catch(e){setMsg("오류: "+e.message);setBusy(false);}
+  };
+
+  return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:24,padding:24}}>
+      <div style={{fontSize:28,color:"#88aaff",fontWeight:"bold"}}>🚀 우주 전략 게임</div>
+      <div style={{fontSize:12,color:"#555"}}>Firebase 실시간 온라인 대전</div>
+      {busy?<div className="spinner"/>:<>
+        <div style={{display:"flex",flexDirection:"column",gap:12,width:"100%",maxWidth:320}}>
+          <button onClick={create} style={{padding:16,background:"#001a44",color:"#88ccff",border:"1px solid #2244aa",borderRadius:14,fontSize:17,fontWeight:"bold"}}>✨ 방 만들기 (P1 선공)</button>
+          <div style={{color:"#333",textAlign:"center",fontSize:12}}>── 또는 ──</div>
+          <input value={inp} onChange={e=>setInp(e.target.value.replace(/\D/g,""))} placeholder="방 코드 4자리"
+            maxLength={4} inputMode="numeric"
+            style={{padding:14,background:"#0a0a1a",color:"#ccc",border:"1px solid #2a2a44",borderRadius:12,fontSize:24,textAlign:"center",letterSpacing:8,outline:"none",width:"100%"}}/>
+          <button onClick={join} style={{padding:14,background:"#1a0033",color:"#cc88ff",border:"1px solid #6633aa",borderRadius:14,fontSize:17,fontWeight:"bold"}}>🎮 입장하기 (P2 후공)</button>
+          {msg&&<div style={{color:"#ff6666",fontSize:13,textAlign:"center"}}>{msg}</div>}
+        </div>
+        <div style={{fontSize:11,color:"#333",textAlign:"center",lineHeight:2}}>
+          P1이 방 만들고 코드를 친구에게 전달<br/>친구가 코드 입력 후 입장 → 게임 시작!
+        </div>
+      </>}
+    </div>
+  );
+}
+
+/* ── 게임 화면 ── */
+function Game({roomCode,myPlayer}){
+  const[gs,setGs]=useState(null);
+  const[buildMenu,setBuildMenu]=useState(false);
+  const[sel,setSel]=useState(null);
+  const[mode,setMode]=useState(null);
+  const writing=useRef(false);
+
+  useEffect(()=>{
+    const r=window._ref(window._db,`rooms/${roomCode}`);
+    window._onValue(r,snap=>{
+      if(writing.current)return;
+      const raw=snap.val();
+      if(!raw)return;
+      // 안전하게 기본값 보장
+      raw.map=raw.map||Array(GR*GC).fill("empty");
+      raw.sd=raw.sd||{};
+      raw.revealed=raw.revealed||Array(GR*GC).fill(false);
+      raw.vis=raw.vis||[];
+      raw.col=raw.col||{};
+      raw.rsp=raw.rsp||{};
+      raw.res=raw.res||[500,600];
+      raw.hq=raw.hq||[{r:4,c:0,hp:10000,maxHp:10000},{r:4,c:10,hp:10000,maxHp:10000}];
+      raw.ships=raw.ships||[];
+      raw.log=raw.log||[];
+      raw.nid=raw.nid||3;
+      raw.turn=raw.turn||0;
+      raw.win=raw.win!==undefined?raw.win:null;
+      setGs(raw);
+    });
+    return()=>window._off(r);
+  },[roomCode]);
+
+  const push=useCallback(async(next)=>{
+    writing.current=true;
+    await window._set(window._ref(window._db,`rooms/${roomCode}`),next);
+    setTimeout(()=>{writing.current=false;},400);
+  },[roomCode]);
+
+  const mutate=useCallback((fn)=>{
+    setGs(prev=>{
+      if(!prev)return prev;
+      const next=fn(prev);
+      if(next===prev)return prev;
+      push(next);
+      return next;
+    });
+  },[push]);
+
+  if(!gs)return<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><div className="spinner"/><div style={{color:"#555",fontSize:13}}>로딩 중...</div></div>;
+
+  const cp=gs.turn%2;
+  const isMe=cp===myPlayer;
+  const selShip=sel!=null?gs.ships.find(s=>s.id===sel):null;
+  const selT=selShip?ST[selShip.type]:null;
+  const CELL=Math.min(46,Math.floor((window.innerWidth-12)/GC));
+
+  const tap=(r,c)=>{
+    if(!isMe||gs.win!=null)return;
+    const shipHere=gs.ships.find(s=>s.r===r&&s.c===c);
+    const mine=shipHere?.owner===myPlayer?shipHere:null;
+    if(sel==null){if(mine){setSel(mine.id);setMode(null);}return;}
+    const ship=gs.ships.find(s=>s.id===sel);
+    if(!ship){setSel(null);setMode(null);return;}
+    if(mine?.id===ship.id){setSel(null);setMode(null);return;}
+    if(mine){setSel(mine.id);setMode(null);return;}
+    if(mode==="atk"){mutate(s=>doAttack(s,ship.id,r,c));setSel(null);setMode(null);return;}
+    if(mode==="mov"&&md(ship,{r,c})===1){mutate(s=>doMove(s,ship.id,r,c));setMode(null);return;}
+    setMode(null);
+  };
+
+  // 하이라이트
+  const movH=new Set(),atkH=new Set();
+  if(selShip&&mode==="mov"){
+    [[selShip.r-1,selShip.c],[selShip.r+1,selShip.c],[selShip.r,selShip.c-1],[selShip.r,selShip.c+1]]
+      .forEach(([r,c])=>{if(r>=0&&r<GR&&c>=0&&c<GC&&!gs.ships.find(s=>s.r===r&&s.c===c))movH.add(`${r},${c}`);});
+  }
+  if(selShip&&mode==="atk"){
+    const rng=selT.range;
+    for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(selShip,{r,c})>0&&md(selShip,{r,c})<=rng)atkH.add(`${r},${c}`);
+  }
+
+  const canCol=selShip&&selT?.col&&cell(gs,selShip.r,selShip.c)==="planet"&&gs.col[`${selShip.r},${selShip.c}`]!==myPlayer;
+  const p0s=gs.ships.filter(s=>s.owner===0),p1s=gs.ships.filter(s=>s.owner===1);
+  const col=gs.col||{},rsp=gs.rsp||{},vis=gs.vis||[];
+
+  return(
+    <div style={{background:"#050510",minHeight:"100vh",padding:6,display:"flex",flexDirection:"column",gap:6}}>
+
+      {/* 상태 바 */}
+      <div style={{display:"flex",gap:6,fontSize:11}}>
+        {[0,1].map(p=>{
+          const ps=p===0?p0s:p1s,cnt={};
+          ps.forEach(s=>{cnt[s.type]=(cnt[s.type]||0)+1;});
+          return(
+            <div key={p} style={{flex:1,background:cp===p?"#0d0d22":"#080810",border:`2px solid ${cp===p?(p===0?"#4466ff":"#ff4444"):"#1a1a2a"}`,borderRadius:8,padding:"5px 8px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:2}}>
+                <b style={{color:p===0?"#6699ff":"#ff7777"}}>P{p+1}{p===myPlayer?" 나":""}{p===1?" 후공":""} {cp===p?"◀":""}</b>
+                <span>💰{gs.res[p]}</span>
+                <span style={{color:gs.hq[p].hp<3000?"#ff4444":"#88ff88"}}>🏠{gs.hq[p].hp}</span>
+                <span>🪐{Object.entries(col).filter(([,o])=>o===p).length}</span>
+              </div>
+              <div style={{marginTop:2,display:"flex",gap:4,flexWrap:"wrap"}}>
+                {Object.entries(ST).map(([k,t])=>cnt[k]?<span key={k} style={{fontSize:10,color:p===0?"#4477aa":"#aa4444"}}>{t.sym}×{cnt[k]}</span>:null)}
+                <span style={{fontSize:10,color:"#333"}}>총{ps.length}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 배너 */}
+      {gs.win!=null?(
+        <div style={{background:"#1a0033",border:"2px solid #aa44ff",borderRadius:10,padding:12,textAlign:"center"}}>
+          <div style={{fontSize:20,color:"#cc88ff",marginBottom:8}}>🏆 P{gs.win+1}{gs.win===myPlayer?" (나)":""} 승리!</div>
+          <button onClick={()=>push(makeInit())} style={{padding:"8px 20px",background:"#330066",color:"#cc88ff",border:"1px solid #aa44ff",borderRadius:8,fontSize:14}}>새 게임</button>
+        </div>
+      ):(
+        <div style={{background:isMe?"#001a00":"#150000",border:`1px solid ${isMe?"#336633":"#441111"}`,borderRadius:8,padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:13,color:isMe?"#44ff44":"#ff6644"}}>{isMe?"✅ 내 턴":"⏳ 상대 턴 대기 중..."}</span>
+          <span style={{fontSize:11,color:"#333"}}>방:{roomCode}</span>
+        </div>
+      )}
+
+      {/* 그리드 */}
+      <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+        <svg width={GC*CELL} height={GR*CELL} style={{display:"block",border:"1px solid #1a1a2a",borderRadius:4}}>
+          {Array.from({length:GR},(_,r)=>Array.from({length:GC},(_,c)=>{
+            const key=`${r},${c}`;
+            const idx=r*GC+c;
+            const isH0=gs.hq[0].r===r&&gs.hq[0].c===c;
+            const isH1=gs.hq[1].r===r&&gs.hq[1].c===c;
+            const ship=gs.ships.find(s=>s.r===r&&s.c===c);
+            const rev=gs.revealed[idx];
+            const ct=gs.map[idx]||"empty";
+            const owner=col[key];
+            const mov=movH.has(key),atk=atkH.has(key);
+            const isSel=selShip?.r===r&&selShip?.c===c;
+            const strRev=vis.includes(idx);
+            let bg="#0d0d1a";
+            if(isH0)bg="#001133";else if(isH1)bg="#220000";
+            else if(rev){
+              if(ct==="planet")bg=owner===0?"#001a33":owner===1?"#330000":"#0d1a0d";
+              else if(ct==="resource")bg="#1a1a00";
+              else if(ct==="stream"&&strRev)bg="#00111a";
+            }
+            const fs=Math.max(7,CELL*0.22);
+            return(
+              <g key={key} onClick={()=>tap(r,c)}>
+                <rect x={c*CELL} y={r*CELL} width={CELL} height={CELL} fill={bg}
+                  stroke={mov?"#4488ff":atk?"#ff3333":isSel?"#ffcc00":"#151528"}
+                  strokeWidth={mov||atk||isSel?2:0.5}/>
+                {mov&&<rect x={c*CELL+1} y={r*CELL+1} width={CELL-2} height={CELL-2} fill="#4488ff15"/>}
+                {atk&&<rect x={c*CELL+1} y={r*CELL+1} width={CELL-2} height={CELL-2} fill="#ff333315"/>}
+                {(isH0||isH1)&&<>
+                  <rect x={c*CELL+3} y={r*CELL+3} width={CELL-6} height={CELL-6} fill={isH0?"#003399":"#990000"} rx={4}/>
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL/2-3} textAnchor="middle" fontSize={fs} fill={isH0?"#aaccff":"#ffaaaa"} fontWeight="bold">HQ</text>
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs} textAnchor="middle" fontSize={fs*0.75} fill="#aaa">{isH0?gs.hq[0].hp:gs.hq[1].hp}</text>
+                </>}
+                {!isH0&&!isH1&&rev&&ct==="planet"&&<>
+                  <circle cx={c*CELL+CELL/2} cy={r*CELL+CELL/2} r={CELL*0.28} fill={owner===0?"#002255":owner===1?"#550000":"#112211"} stroke={owner===0?"#4488ff":owner===1?"#ff4444":"#336633"} strokeWidth={1.5}/>
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.2}>🪐</text>
+                  {owner!=null&&<text x={c*CELL+CELL/2} y={r*CELL+CELL-3} textAnchor="middle" fontSize={fs*0.75} fill={owner===0?"#88aaff":"#ff8888"}>P{owner+1}</text>}
+                </>}
+                {!isH0&&!isH1&&rev&&ct==="resource"&&!rsp[key]&&
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.2}>💎</text>}
+                {!isH0&&!isH1&&rev&&ct==="stream"&&strRev&&
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.2}>🌀</text>}
+                {!isH0&&!isH1&&!rev&&
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.3} textAnchor="middle" fontSize={fs*0.85} fill="#252535">?</text>}
+                {ship&&<>
+                  <rect x={c*CELL+CELL*0.18} y={r*CELL+CELL*0.18} width={CELL*0.64} height={CELL*0.64}
+                    fill={ship.owner===0?"#002277":"#660011"}
+                    stroke={isSel?"#ffcc00":ship.owner===0?"#4488ff":"#ff4444"} strokeWidth={isSel?2:1} rx={3}/>
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL/2} textAnchor="middle" dominantBaseline="middle" fontSize={fs*1.1} fill={ship.owner===0?"#88ccff":"#ffaaaa"} fontWeight="bold">{ST[ship.type].sym}</text>
+                  <text x={c*CELL+CELL/2} y={r*CELL+CELL*0.9} textAnchor="middle" fontSize={fs*0.7} fill="#aaa">{ship.hp}</text>
+                </>}
+              </g>
+            );
+          }))}
+        </svg>
+      </div>
+
+      {/* 액션 패널 */}
+      {isMe&&gs.win==null&&(
+        <div style={{background:"#0a0a1a",border:"1px solid #2a2a44",borderRadius:10,padding:"8px 10px"}}>
+          {selShip?(
+            <>
+              <div style={{color:"#88aaff",fontWeight:"bold",fontSize:12,marginBottom:4}}>
+                {selT.name}<span style={{color:"#555",fontWeight:"normal",fontSize:11}}> HP{selShip.hp}/{selShip.maxHp} ATK{selT.atk} RNG{selT.range}</span>
+              </div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={()=>setMode(m=>m==="mov"?null:"mov")} disabled={selShip.ml<=0}
+                  style={{flex:1,minWidth:70,padding:"9px 4px",background:mode==="mov"?"#003388":selShip.ml>0?"#001133":"#0a0a0a",color:mode==="mov"?"#88ccff":selShip.ml>0?"#6699cc":"#333",border:`1px solid ${mode==="mov"?"#4488ff":selShip.ml>0?"#224488":"#111"}`,borderRadius:8,fontSize:12,fontWeight:"bold"}}>
+                  이동 {selShip.ml}/{selT.move}
+                </button>
+                <button onClick={()=>setMode(m=>m==="atk"?null:"atk")} disabled={selShip.atk}
+                  style={{flex:1,minWidth:70,padding:"9px 4px",background:mode==="atk"?"#880000":!selShip.atk?"#330000":"#0a0a0a",color:mode==="atk"?"#ffaaaa":!selShip.atk?"#cc6666":"#333",border:`1px solid ${mode==="atk"?"#ff4444":!selShip.atk?"#882222":"#111"}`,borderRadius:8,fontSize:12,fontWeight:"bold"}}>
+                  공격{selShip.atk?" ✗":" ✓"}
+                </button>
+                {selT.col&&(
+                  <button onClick={()=>{mutate(s=>doColonize(s,selShip.id));setSel(null);setMode(null);}} disabled={!canCol}
+                    style={{flex:1,minWidth:70,padding:"9px 4px",background:canCol?"#002200":"#0a0a0a",color:canCol?"#44ff88":"#333",border:`1px solid ${canCol?"#226622":"#111"}`,borderRadius:8,fontSize:12,fontWeight:"bold"}}>
+                    🪐 점령
+                  </button>
+                )}
+              </div>
+              {mode==="mov"&&<div style={{fontSize:10,color:"#4488ff",marginTop:4}}>인접 칸 탭 (남은 {selShip.ml}칸)</div>}
+              {mode==="atk"&&<div style={{fontSize:10,color:"#ff4444",marginTop:4}}>공격할 적 탭</div>}
+            </>
+          ):(
+            <div style={{fontSize:12,color:"#444",textAlign:"center",padding:"4px 0"}}>함선을 탭해서 선택하세요</div>
+          )}
+        </div>
+      )}
+
+      {/* 생산 + 턴종료 */}
+      {isMe&&gs.win==null&&(
+        <div style={{display:"flex",gap:8}}>
+          <div style={{flex:1}}>
+            {!buildMenu?(
+              <button onClick={()=>setBuildMenu(true)} style={{width:"100%",padding:11,background:"#001133",color:"#88aaff",border:"1px solid #2244aa",borderRadius:10,fontSize:14,fontWeight:"bold"}}>
+                + 함선 생산
+              </button>
+            ):(
+              <div style={{background:"#08080f",border:"1px solid #1a2244",borderRadius:10,padding:8,display:"flex",gap:6,flexWrap:"wrap"}}>
+                {Object.entries(ST).map(([k,t])=>{
+                  const ok=gs.res[myPlayer]>=t.cost;
+                  return<button key={k} onClick={()=>{mutate(s=>doBuild(s,k,myPlayer));setBuildMenu(false);}} disabled={!ok}
+                    style={{flex:"1 1 44%",padding:"8px 4px",background:ok?"#001a33":"#0a0a0a",color:ok?"#88ccff":"#333",border:`1px solid ${ok?"#1a3366":"#111"}`,borderRadius:8,fontSize:11}}>
+                    <b>{t.sym} {t.name}</b><br/><span style={{color:ok?"#ffcc44":"#333",fontSize:10}}>{t.cost}자원</span>
+                  </button>;
+                })}
+                <button onClick={()=>setBuildMenu(false)} style={{flex:"1 1 100%",padding:7,background:"transparent",color:"#444",border:"1px solid #111",borderRadius:8,fontSize:12}}>✕ 닫기</button>
+              </div>
+            )}
+          </div>
+          <button onClick={()=>{mutate(s=>doEndTurn(s));setBuildMenu(false);setSel(null);setMode(null);}}
+            style={{padding:"11px 18px",background:"#003300",color:"#44ff44",border:"1px solid #228822",borderRadius:10,fontSize:14,fontWeight:"bold",whiteSpace:"nowrap"}}>
+            턴 종료 ▶
+          </button>
+        </div>
+      )}
+
+      {/* 로그 */}
+      <div style={{background:"#08080f",border:"1px solid #1a1a2a",borderRadius:8,padding:"6px 10px"}}>
+        <div style={{fontSize:9,color:"#333",marginBottom:2}}>S탐사 F전투 L장거리 A함대 | +{REGEN}HP/턴</div>
+        <div style={{fontSize:10,maxHeight:52,overflowY:"auto",display:"flex",flexDirection:"column-reverse"}}>
+          {[...(gs.log||[])].reverse().map((l,i)=>(
+            <div key={i} style={{color:i===0?"#ffcc44":"#444",marginBottom:1}}>{l}</div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── 루트 ── */
+function App(){
+  const[ready,setReady]=useState(!!window._fbReady);
+  const[room,setRoom]=useState(null);
+  useEffect(()=>{
+    if(!ready){const h=()=>setReady(true);window.addEventListener("fbReady",h);return()=>window.removeEventListener("fbReady",h);}
+  },[]);
+  if(!ready)return<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><div className="spinner"/><div style={{color:"#555",fontSize:13}}>Firebase 연결 중...</div></div>;
+  if(!room)return<Lobby onJoin={(c,p)=>setRoom({c,p})}/>;
+  return<Game roomCode={room.c} myPlayer={room.p}/>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
