@@ -31,7 +31,6 @@ input{font-family:monospace;}
 <script type="text/babel">
 const {useState,useEffect,useCallback,useRef}=React;
 
-/* ── 상수 ── */
 const GC=11,GR=9;
 const ST={
   scout:    {name:"탐사선",      cost:200, hp:300,  atk:100, range:2,sight:2,move:3,col:true, sym:"S"},
@@ -44,8 +43,6 @@ const md=(a,b)=>Math.abs(a.r-b.r)+Math.abs(a.c-b.c);
 const rnd4=()=>Math.floor(1000+Math.random()*9000).toString();
 const shuf=a=>{const b=[...a];for(let i=b.length-1;i>0;i--){const j=0|Math.random()*(i+1);[b[i],b[j]]=[b[j],b[i]];}return b;};
 
-/* ── 맵: 1차원 배열로 저장 (Firebase 호환) ── */
-// map[r*GC+c] = "empty"|"planet"|"resource"|"stream"
 function generateMap(){
   const map=Array(GR*GC).fill("empty");
   const hq=[{r:4,c:0},{r:4,c:10}];
@@ -71,15 +68,13 @@ function generateMap(){
   for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)sd[r*GC+c]={dir:dirs[0|Math.random()*4],dist:1+(0|Math.random()*3)};
   return{map,sd};
 }
-const cell=(gs,r,c)=>gs.map[r*GC+c]||"empty";
-const sdir=(gs,r,c)=>gs.sd[r*GC+c]||{dir:"right",dist:1};
+const gcell=(gs,r,c)=>gs.map[r*GC+c]||"empty";
+const gsdir=(gs,r,c)=>gs.sd[r*GC+c]||{dir:"right",dist:1};
 
-/* ── 시야 ── */
 function revealFor(gs,player){
   const rev=[...gs.revealed];
-  // HQ 항상 공개
   rev[4*GC+0]=true;rev[4*GC+10]=true;
-  gs.ships.filter(s=>s.owner===player).forEach(s=>{
+  (gs.ships||[]).filter(s=>s.owner===player).forEach(s=>{
     const t=ST[s.type];
     for(let r=0;r<GR;r++)for(let c=0;c<GC;c++)if(md(s,{r,c})<=t.sight)rev[r*GC+c]=true;
   });
@@ -88,47 +83,23 @@ function revealFor(gs,player){
   return rev;
 }
 
-/* ── BFS 1칸 이동 ── */
-function stepTo(ship,tr,tc,ships){
-  const blocked=new Set(ships.filter(s=>s.id!==ship.id).map(s=>s.r*GC+s.c));
-  const q=[[ship.r,ship.c,[]]];const vis=new Set([ship.r*GC+ship.c]);
-  while(q.length){
-    const[r,c,path]=q.shift();
-    for(const[nr,nc]of[[r-1,c],[r+1,c],[r,c-1],[r,c+1]]){
-      if(nr<0||nr>=GR||nc<0||nc>=GC)continue;
-      const k=nr*GC+nc;if(vis.has(k)||blocked.has(k))continue;
-      const np=[...path,[nr,nc]];
-      if(nr===tr&&nc===tc)return np[0]||null;
-      vis.add(k);q.push([nr,nc,np]);
-    }
-  }
-  return null;
-}
-
-/* ── 초기 상태 ── */
 function makeInit(){
   const{map,sd}=generateMap();
   const revealed=Array(GR*GC).fill(false);
   revealed[4*GC+0]=true;revealed[4*GC+10]=true;
   const gs={
-    map,sd,
-    revealed,
-    vis:[],          // 방문한 스트림 인덱스 배열
-    col:{},          // "r,c" -> owner(0|1) or null
-    rsp:{},          // "r,c" -> true (자원 획득됨)
-    res:[500,600],
+    map,sd,revealed,vis:[],col:{},rsp:{},res:[500,600],
     hq:[{r:4,c:0,hp:10000,maxHp:10000},{r:4,c:10,hp:10000,maxHp:10000}],
     ships:[
       {id:1,owner:0,type:"scout",r:4,c:0,hp:300,maxHp:300,ml:3,atk:false},
       {id:2,owner:1,type:"scout",r:4,c:10,hp:300,maxHp:300,ml:3,atk:false},
     ],
-    nid:3,turn:0,log:["게임 시작! P1(500자원) vs P2(600자원 후공보너스)"],win:null,
+    nid:3,turn:0,log:["게임 시작! P1(500) vs P2(600 후공보너스)"],win:null,
   };
   gs.revealed=revealFor(gs,0);
   return gs;
 }
 
-/* ── 게임 액션 ── */
 function doMove(gs,shipId,r,c){
   const cp=gs.turn%2;
   let ships=[...gs.ships];
@@ -138,18 +109,18 @@ function doMove(gs,shipId,r,c){
   let res=[...gs.res],col={...gs.col},rsp={...gs.rsp};
   let log=[...gs.log],win=gs.win,nr=r,nc=c;
   const vis=[...gs.vis];
-  const ct=cell(gs,r,c);
+  const ct=gcell(gs,r,c);
   if(ct==="stream"){
     const idx=r*GC+c;
     if(!vis.includes(idx))vis.push(idx);
-    const sd=sdir(gs,r,c);
+    const sd=gsdir(gs,r,c);
     const dr=sd.dir==="up"?-1:sd.dir==="down"?1:0;
     const dc=sd.dir==="left"?-1:sd.dir==="right"?1:0;
     nr=Math.max(0,Math.min(GR-1,r+dr*sd.dist));
     nc=Math.max(0,Math.min(GC-1,c+dc*sd.dist));
     log.push(`🌀 스트림→${sd.dir} ${sd.dist}칸`);
   }
-  const lk=`${nr},${nc}`,lc=cell(gs,nr,nc);
+  const lk=`${nr},${nc}`,lc=gcell(gs,nr,nc);
   if(lc==="resource"&&!rsp[lk]){res[cp]+=300;rsp[lk]=true;log.push(`💎 자원+300`);}
   ships=ships.map(s=>s.id===shipId?{...s,r:nr,c:nc,ml:s.ml-1}:s);
   const revealed=revealFor({...gs,ships},cp);
@@ -161,7 +132,7 @@ function doColonize(gs,shipId){
   let ships=[...gs.ships];
   const ship=ships.find(s=>s.id===shipId);
   if(!ship||!ST[ship.type].col)return gs;
-  if(cell(gs,ship.r,ship.c)!=="planet")return gs;
+  if(gcell(gs,ship.r,ship.c)!=="planet")return gs;
   const key=`${ship.r},${ship.c}`;
   let col={...gs.col},log=[...gs.log];
   const own=gs.col[key];
@@ -213,9 +184,38 @@ function doEndTurn(gs){
   const np=(gs.turn+1)%2;
   const res=[...gs.res];res[np]+=100;
   Object.entries(gs.col||{}).forEach(([,o])=>{if(o===np)res[np]+=100;});
-  const ships=gs.ships.map(s=>({...s,ml:ST[s.type].move,atk:false,hp:Math.min(s.maxHp,s.hp+REGEN)}));
+  const ships=(gs.ships||[]).map(s=>({...s,ml:ST[s.type].move,atk:false,hp:Math.min(s.maxHp,s.hp+REGEN)}));
   const revealed=revealFor({...gs,ships},np);
   return{...gs,turn:gs.turn+1,res,ships,log:[...gs.log,`── P${np+1} 턴 (💰${res[np]})`],revealed};
+}
+
+/* ── 이동 범위 BFS (렌더 외부 순수함수) ── */
+function calcMovH(selShip,ships){
+  const m=new Map();
+  if(!selShip)return m;
+  const ml=selShip.ml||0;
+  const blocked=new Set((ships||[]).filter(s=>s.id!==selShip.id).map(s=>`${s.r},${s.c}`));
+  const q=[[selShip.r,selShip.c,0]];
+  const vis=new Set([`${selShip.r},${selShip.c}`]);
+  while(q.length){
+    const[r,c,cost]=q.shift();
+    for(const[nr,nc]of[[r-1,c],[r+1,c],[r,c-1],[r,c+1]]){
+      if(nr<0||nr>=GR||nc<0||nc>=GC)continue;
+      const k=`${nr},${nc}`;
+      const nc2=cost+1;
+      if(nc2>ml||vis.has(k)||blocked.has(k))continue;
+      vis.add(k);m.set(k,nc2);
+      q.push([nr,nc,nc2]);
+    }
+  }
+  return m;
+}
+
+function calcAtkH(selShip,range){
+  const s=new Set();
+  if(!selShip||!range)return s;
+  for(let r=0;r<GR;r++)for(let c=0;c<GC;c++){const d=md(selShip,{r,c});if(d>0&&d<=range)s.add(`${r},${c}`);}
+  return s;
 }
 
 /* ── 로비 ── */
@@ -227,21 +227,11 @@ function Lobby({onJoin}){
   const create=async()=>{
     setBusy(true);setMsg("방 생성 중...");
     try{
-      if(!window._db)throw new Error("Firebase DB 없음");
       const code=rnd4();
-      setMsg("코드 생성: "+code+" / 저장 중...");
       const gs=makeInit();
-      // map이 배열인지 확인
-      if(!Array.isArray(gs.map))throw new Error("map 생성 실패");
-      const r=window._ref(window._db,`rooms/${code}`);
-      await window._set(r,gs);
-      setMsg("저장 완료!");
+      await window._set(window._ref(window._db,`rooms/${code}`),gs);
       onJoin(code,0);
-    }catch(e){
-      console.error(e);
-      setMsg("❌ 오류: "+e.message);
-      setBusy(false);
-    }
+    }catch(e){setMsg("❌ "+e.message);setBusy(false);}
   };
 
   const join=async()=>{
@@ -252,7 +242,7 @@ function Lobby({onJoin}){
       const snap=await new Promise(res=>window._onValue(window._ref(window._db,`rooms/${code}`),res,{onlyOnce:true}));
       if(!snap.val()){setMsg("방 없음");setBusy(false);return;}
       onJoin(code,1);
-    }catch(e){setMsg("오류: "+e.message);setBusy(false);}
+    }catch(e){setMsg("❌ "+e.message);setBusy(false);}
   };
 
   return(
@@ -267,7 +257,7 @@ function Lobby({onJoin}){
             maxLength={4} inputMode="numeric"
             style={{padding:14,background:"#0a0a1a",color:"#ccc",border:"1px solid #2a2a44",borderRadius:12,fontSize:24,textAlign:"center",letterSpacing:8,outline:"none",width:"100%"}}/>
           <button onClick={join} style={{padding:14,background:"#1a0033",color:"#cc88ff",border:"1px solid #6633aa",borderRadius:14,fontSize:17,fontWeight:"bold"}}>🎮 입장하기 (P2 후공)</button>
-          {msg&&<div style={{color:"#ff6666",fontSize:13,textAlign:"center"}}>{msg}</div>}
+          {msg&&<div style={{color:msg.startsWith("❌")?"#ff6666":"#88aaff",fontSize:13,textAlign:"center"}}>{msg}</div>}
         </div>
         <div style={{fontSize:11,color:"#333",textAlign:"center",lineHeight:2}}>
           P1이 방 만들고 코드를 친구에게 전달<br/>친구가 코드 입력 후 입장 → 게임 시작!
@@ -277,7 +267,7 @@ function Lobby({onJoin}){
   );
 }
 
-/* ── 게임 화면 ── */
+/* ── 게임 ── */
 function Game({roomCode,myPlayer}){
   const[gs,setGs]=useState(null);
   const[buildMenu,setBuildMenu]=useState(false);
@@ -291,7 +281,6 @@ function Game({roomCode,myPlayer}){
       if(writing.current)return;
       const raw=snap.val();
       if(!raw)return;
-      // 안전하게 기본값 보장
       raw.map=raw.map||Array(GR*GC).fill("empty");
       raw.sd=raw.sd||{};
       raw.revealed=raw.revealed||Array(GR*GC).fill(false);
@@ -304,7 +293,7 @@ function Game({roomCode,myPlayer}){
       raw.log=raw.log||[];
       raw.nid=raw.nid||3;
       raw.turn=raw.turn||0;
-      raw.win=raw.win!==undefined?raw.win:null;
+      raw.win=(raw.win!==undefined&&raw.win!==null)?raw.win:null;
       setGs(raw);
     });
     return()=>window._off(r);
@@ -326,63 +315,50 @@ function Game({roomCode,myPlayer}){
     });
   },[push]);
 
-  if(!gs)return<div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}><div className="spinner"/><div style={{color:"#555",fontSize:13}}>로딩 중...</div></div>;
+  if(!gs)return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
+      <div className="spinner"/>
+      <div style={{color:"#555",fontSize:13}}>로딩 중...</div>
+    </div>
+  );
 
   const cp=gs.turn%2;
   const isMe=cp===myPlayer;
-  const selShip=sel!=null?gs.ships.find(s=>s.id===sel):null;
+  const selShip=sel!=null?(gs.ships||[]).find(s=>s.id===sel):null;
   const selT=selShip?ST[selShip.type]:null;
   const CELL=Math.min(46,Math.floor((window.innerWidth-12)/GC));
 
+  // 하이라이트 (순수함수 호출, Hook 아님)
+  const movH=mode==="mov"?calcMovH(selShip,gs.ships):new Map();
+  const atkH=mode==="atk"?calcAtkH(selShip,selT?.range):new Set();
+
   const tap=(r,c)=>{
     if(!isMe||gs.win!=null)return;
-    const shipHere=gs.ships.find(s=>s.r===r&&s.c===c);
+    const ships=gs.ships||[];
+    const shipHere=ships.find(s=>s.r===r&&s.c===c);
     const mine=shipHere?.owner===myPlayer?shipHere:null;
     if(sel==null){if(mine){setSel(mine.id);setMode(null);}return;}
-    const ship=gs.ships.find(s=>s.id===sel);
+    const ship=ships.find(s=>s.id===sel);
     if(!ship){setSel(null);setMode(null);return;}
     if(mine?.id===ship.id){setSel(null);setMode(null);return;}
     if(mine){setSel(mine.id);setMode(null);return;}
     if(mode==="atk"){mutate(s=>doAttack(s,ship.id,r,c));setSel(null);setMode(null);return;}
-    if(mode==="mov"&&md(ship,{r,c})===1){mutate(s=>doMove(s,ship.id,r,c));setMode(null);return;}
+    if(mode==="mov"){
+      const k=`${r},${c}`;
+      if(movH.has(k)){mutate(s=>doMove(s,ship.id,r,c));setMode(null);}
+      return;
+    }
     setMode(null);
   };
 
-  // 하이라이트 계산 (단순 인라인)
-  const movH=new Map();
-  const atkH=new Set();
-  if(selShip&&mode==="mov"&&gs.ships){
-    const ml=selShip.ml||0;
-    const blocked=new Set((gs.ships||[]).filter(s=>s.id!==selShip.id).map(s=>`${s.r},${s.c}`));
-    const q=[[selShip.r,selShip.c,0]];
-    const vis=new Set([`${selShip.r},${selShip.c}`]);
-    while(q.length){
-      const[r,c,cost]=q.shift();
-      for(const[nr,nc]of[[r-1,c],[r+1,c],[r,c-1],[r,c+1]]){
-        if(nr<0||nr>=GR||nc<0||nc>=GC)continue;
-        const k=`${nr},${nc}`;
-        const nc2=cost+1;
-        if(nc2>ml||vis.has(k)||blocked.has(k))continue;
-        vis.add(k);movH.set(k,nc2);
-        q.push([nr,nc,nc2]);
-      }
-    }
-  }
-  if(selShip&&mode==="atk"&&selT){
-    const rng=selT.range||0;
-    for(let r=0;r<GR;r++)for(let c=0;c<GC;c++){const d=md(selShip,{r,c});if(d>0&&d<=rng)atkH.add(`${r},${c}`);}
-  }
-
-
-
-  const canCol=selShip&&selT?.col&&cell(gs,selShip.r,selShip.c)==="planet"&&gs.col[`${selShip.r},${selShip.c}`]!==myPlayer;
-  const p0s=gs.ships.filter(s=>s.owner===0),p1s=gs.ships.filter(s=>s.owner===1);
+  const canCol=selShip&&selT?.col&&gcell(gs,selShip.r,selShip.c)==="planet"&&gs.col[`${selShip.r},${selShip.c}`]!==myPlayer;
   const col=gs.col||{},rsp=gs.rsp||{},vis=gs.vis||[];
+  const p0s=(gs.ships||[]).filter(s=>s.owner===0),p1s=(gs.ships||[]).filter(s=>s.owner===1);
 
   return(
     <div style={{background:"#050510",minHeight:"100vh",padding:6,display:"flex",flexDirection:"column",gap:6}}>
 
-      {/* 상태 바 */}
+      {/* 상태바 */}
       <div style={{display:"flex",gap:6,fontSize:11}}>
         {[0,1].map(p=>{
           const ps=p===0?p0s:p1s,cnt={};
@@ -404,19 +380,19 @@ function Game({roomCode,myPlayer}){
         })}
       </div>
 
-      {/* 배너 */}
+      {/* 방코드 + 턴 배너 */}
       {gs.win!=null?(
         <div style={{background:"#1a0033",border:"2px solid #aa44ff",borderRadius:10,padding:12,textAlign:"center"}}>
           <div style={{fontSize:20,color:"#cc88ff",marginBottom:8}}>🏆 P{gs.win+1}{gs.win===myPlayer?" (나)":""} 승리!</div>
           <button onClick={()=>push(makeInit())} style={{padding:"8px 20px",background:"#330066",color:"#cc88ff",border:"1px solid #aa44ff",borderRadius:8,fontSize:14}}>새 게임</button>
         </div>
       ):(
-        <div style={{background:"#0a0a22",border:"1px solid #2a2a44",borderRadius:8,padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+        <div style={{background:"#0a0a1a",border:"1px solid #2a2a44",borderRadius:8,padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={{fontSize:11,color:"#555"}}>방 코드</span>
             <span style={{fontSize:22,color:"#44aaff",fontWeight:"bold",letterSpacing:4}}>{roomCode}</span>
-            <button onClick={()=>{navigator.clipboard.writeText(roomCode);alert("코드 복사됨: "+roomCode);}}
-              style={{padding:"3px 8px",background:"#001a33",color:"#44aaff",border:"1px solid #2244aa",borderRadius:6,fontSize:11,cursor:"pointer"}}>
+            <button onClick={()=>{navigator.clipboard.writeText(roomCode);alert("복사됨: "+roomCode);}}
+              style={{padding:"3px 8px",background:"#001a33",color:"#44aaff",border:"1px solid #2244aa",borderRadius:6,fontSize:11}}>
               복사
             </button>
           </div>
@@ -432,13 +408,15 @@ function Game({roomCode,myPlayer}){
             const idx=r*GC+c;
             const isH0=gs.hq[0].r===r&&gs.hq[0].c===c;
             const isH1=gs.hq[1].r===r&&gs.hq[1].c===c;
-            const ship=gs.ships.find(s=>s.r===r&&s.c===c);
-            const rev=gs.revealed[idx];
-            const ct=gs.map[idx]||"empty";
+            const ship=(gs.ships||[]).find(s=>s.r===r&&s.c===c);
+            const rev=(gs.revealed||[])[idx];
+            const ct=(gs.map||[])[idx]||"empty";
             const owner=col[key];
-            const movCost=movH.get(key),mov=movCost!==undefined,atk=atkH.has(key);
+            const movCost=movH.get(key);
+            const mov=movCost!==undefined;
+            const atk=atkH.has(key);
             const isSel=selShip?.r===r&&selShip?.c===c;
-            const strRev=vis.includes(idx);
+            const strRev=(vis||[]).includes(idx);
             let bg="#0d0d1a";
             if(isH0)bg="#001133";else if(isH1)bg="#220000";
             else if(rev){
@@ -454,6 +432,8 @@ function Game({roomCode,myPlayer}){
                   strokeWidth={mov||atk||isSel?2:0.5}/>
                 {mov&&<rect x={c*CELL+1} y={r*CELL+1} width={CELL-2} height={CELL-2} fill="#4488ff15"/>}
                 {atk&&<rect x={c*CELL+1} y={r*CELL+1} width={CELL-2} height={CELL-2} fill="#ff333315"/>}
+                {/* 이동 소모량 숫자 */}
+                {mov&&!ship&&!isH0&&!isH1&&<text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.5} fill="#4488ff" fontWeight="bold" opacity="0.8">{movCost}</text>}
                 {(isH0||isH1)&&<>
                   <rect x={c*CELL+3} y={r*CELL+3} width={CELL-6} height={CELL-6} fill={isH0?"#003399":"#990000"} rx={4}/>
                   <text x={c*CELL+CELL/2} y={r*CELL+CELL/2-3} textAnchor="middle" fontSize={fs} fill={isH0?"#aaccff":"#ffaaaa"} fontWeight="bold">HQ</text>
@@ -468,7 +448,7 @@ function Game({roomCode,myPlayer}){
                   <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.2}>💎</text>}
                 {!isH0&&!isH1&&rev&&ct==="stream"&&strRev&&
                   <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.2}>🌀</text>}
-                {mov&&!ship&&<text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.4} textAnchor="middle" fontSize={fs*1.4} fill="#4488ff" fontWeight="bold" opacity="0.9">{movCost}</text>}
+                {!isH0&&!isH1&&!rev&&
                   <text x={c*CELL+CELL/2} y={r*CELL+CELL/2+fs*0.3} textAnchor="middle" fontSize={fs*0.85} fill="#252535">?</text>}
                 {ship&&<>
                   <rect x={c*CELL+CELL*0.18} y={r*CELL+CELL*0.18} width={CELL*0.64} height={CELL*0.64}
@@ -507,26 +487,8 @@ function Game({roomCode,myPlayer}){
                   </button>
                 )}
               </div>
-              {mode==="mov"&&<>
-                <div style={{fontSize:10,color:"#4488ff",marginTop:4}}>이동 칸 탭 또는 아래 버튼 사용 (남은 {selShip.ml}칸)</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginTop:6,width:120,margin:"6px auto 0"}}>
-                  <div/>
-                  <button onClick={()=>{const nr=selShip.r-1,nc=selShip.c;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
-                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>▲</button>
-                  <div/>
-                  <button onClick={()=>{const nr=selShip.r,nc=selShip.c-1;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
-                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>◀</button>
-                  <button onClick={()=>{setSel(null);setMode(null);}}
-                    style={{padding:"8px 0",background:"#0a0a1a",color:"#444",border:"1px solid #111",borderRadius:6,fontSize:11}}>✕</button>
-                  <button onClick={()=>{const nr=selShip.r,nc=selShip.c+1;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
-                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>▶</button>
-                  <div/>
-                  <button onClick={()=>{const nr=selShip.r+1,nc=selShip.c;if(movH.has(`${nr},${nc}`))mutate(s=>doMove(s,selShip.id,nr,nc));}}
-                    style={{padding:"8px 0",background:"#001a33",color:"#88ccff",border:"1px solid #224488",borderRadius:6,fontSize:14}}>▼</button>
-                  <div/>
-                </div>
-              </>}
-              {mode==="atk"&&<div style={{fontSize:10,color:"#ff4444",marginTop:4}}>공격할 적 탭</div>}
+              {mode==="mov"&&<div style={{fontSize:10,color:"#4488ff",marginTop:4}}>이동할 칸을 탭하세요 (남은 {selShip.ml}칸)</div>}
+              {mode==="atk"&&<div style={{fontSize:10,color:"#ff4444",marginTop:4}}>공격할 적을 탭하세요</div>}
             </>
           ):(
             <div style={{fontSize:12,color:"#444",textAlign:"center",padding:"4px 0"}}>함선을 탭해서 선택하세요</div>
