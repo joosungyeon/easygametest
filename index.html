@@ -395,9 +395,16 @@ function Game({roomCode,myPlayer}){
           <button onClick={()=>push(makeInit())} style={{padding:"8px 20px",background:"#330066",color:"#cc88ff",border:"1px solid #aa44ff",borderRadius:8,fontSize:14}}>새 게임</button>
         </div>
       ):(
-        <div style={{background:isMe?"#001a00":"#150000",border:`1px solid ${isMe?"#336633":"#441111"}`,borderRadius:8,padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <span style={{fontSize:13,color:isMe?"#44ff44":"#ff6644"}}>{isMe?"✅ 내 턴":"⏳ 상대 턴 대기 중..."}</span>
-          <span style={{fontSize:11,color:"#333"}}>방:{roomCode}</span>
+        <div style={{background:"#0a0a22",border:"1px solid #2a2a44",borderRadius:8,padding:"7px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:11,color:"#555"}}>방 코드</span>
+            <span style={{fontSize:22,color:"#44aaff",fontWeight:"bold",letterSpacing:4}}>{roomCode}</span>
+            <button onClick={()=>{navigator.clipboard.writeText(roomCode);alert("코드 복사됨: "+roomCode);}}
+              style={{padding:"3px 8px",background:"#001a33",color:"#44aaff",border:"1px solid #2244aa",borderRadius:6,fontSize:11,cursor:"pointer"}}>
+              복사
+            </button>
+          </div>
+          <span style={{fontSize:12,color:isMe?"#44ff44":"#ff6644"}}>{isMe?"✅ 내 턴":"⏳ 대기 중..."}</span>
         </div>
       )}
 
